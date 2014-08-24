@@ -4,9 +4,9 @@ import scala.concurrent.Await
 import akka.pattern.ask
 import scala.collection.mutable.HashMap
 import scala.concurrent.ExecutionContext.Implicits.global
+import akka.util.Timeout
 
 case class Add(key: String)
-case class Get(key: String)
 case class Scan(max: Int)
 
 // just worker actors
@@ -16,34 +16,34 @@ class UserActor extends Actor {
   }
 }
 
+// We think about parents for two pattern, so create a trait to share common logics
 trait UserManager extends Actor {
   protected def create(key: String) = context.actorOf(Props[UserActor], key)
-  protected def add(key: String) : Unit
-  protected def get(key: String) : Unit
+  protected def add(key: String): Unit
+  protected def send(key: String, value: Any): Unit
+
   override def receive = {
     case Add(key)  => add(key)
-    case Get(key)  => get(key)
     case Scan(max) =>
-      for( i <- 1 to max) { get(i.toString) }
+      for( i <- 1 to max) { send(i.toString, "hello") }
       sender() ! "done"
   }
 }
 
-// a parent actor that keeps user refs directly in his HashMap
+// Parent(A): keeps user refs directly in his HashMap
 class DirectActor extends UserManager {
   val users = HashMap[String, ActorRef]()
   protected def add(key: String) { users.update(key, create(key)) }
-  protected def get(key: String): Unit = users.get(key) match {
-    case Some(ref) => //
+  protected def send(key: String, value: Any) = users.get(key) match {
+    case Some(ref) => ref ! value
     case None      => throw new RuntimeException(s"$key not found")
   }
 }
 
-// a parent actor that finds users on the fly
+// Parent(B): finds users on the fly
 class LookupActor extends UserManager {
-  implicit val timeout = akka.util.Timeout(10)
   protected def add(key: String) { create(key) }
-  protected def get(key: String): Unit = { context.actorSelection(key) }
+  protected def send(key: String, value: Any) = context.actorSelection(key) ! value
 }
 
 /*
@@ -78,8 +78,12 @@ object Main {
   }
 
   def execute(ref: ActorRef, max: Int) {
-    implicit val timeout = akka.util.Timeout(10000)
+    implicit val timeout = Timeout(10000)
     val asked = Await.result((ref ? Scan(max)).mapTo[String], timeout.duration)
+    asked match {
+      case "done" => // OK
+      case msg => throw new RuntimeException(s"execution failed: $msg")
+    }
   }
 
   private def time[A](a: => A): Long = {
